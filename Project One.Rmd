@@ -1,0 +1,173 @@
+---
+title: "MEMORANDUM"
+author: "Sophie Scherkenbach, Christy Staniak, and Nathania Casas Ponce"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, fig.width = 10, fig.height = 5)
+```
+
+```{r}
+library(patchwork)
+library(tidyverse)
+library(lubridate)
+```
+
+
+```{r}
+rats_raw <- read_csv("Rat_sightings.csv", na = c("", "NA", "N/A"))
+
+rats_clean <- rats_raw %>%
+  rename(created_date = `Created Date`,
+         location_type = `Location Type`,
+         borough = Borough) %>%
+  mutate(created_date = mdy_hms(created_date)) %>%
+  mutate(sighting_year = year(created_date),
+         sighting_month = month(created_date),
+         sighting_day = day(created_date),
+         sighting_weekday = wday(created_date, label = TRUE, abbr = FALSE)) %>%
+  filter(borough != "Unspecified")
+```
+
+```{r}
+rats_clean = rats_clean %>%
+  mutate(quarters = case_when(
+    sighting_month %in% c(1, 2, 3)  ~ "Q1",
+    sighting_month %in% c(4, 5, 6)   ~ "Q2",
+    sighting_month %in% c(7, 8, 9)   ~ "Q3",
+    sighting_month %in% c(10, 11, 12) ~ "Q4"
+  ))
+
+quarterly_pattern = rats_clean %>%
+  group_by(quarters) %>%
+  summarize(avg_sightings = n() / n_distinct(sighting_year)) %>%
+  arrange(desc(avg_sightings))
+```
+
+```{r}
+rats_clean = rats_clean %>%
+  mutate(season = case_when(
+    sighting_month %in% c(12, 1, 2)  ~ "winter",
+    sighting_month %in% c(3, 4, 5)   ~ "spring",
+    sighting_month %in% c(6, 7, 8)   ~ "summer",
+    sighting_month %in% c(9, 10, 11) ~ "fall"
+  ))
+seasonal_pattern = rats_clean %>%
+  group_by(season) %>%
+  summarize(avg_sightings = n() / n_distinct(sighting_year)) %>%
+  arrange(desc(avg_sightings))
+```
+
+```{r}
+temp <- read.csv('NYC_Central_Park_weather_1869-2022.csv')
+```
+
+
+```{r}
+
+temp <- temp %>% mutate(DATE = mdy(DATE))
+
+temp1020 <- temp %>% filter(DATE >= '2010-01-01' & DATE <= '2020-12-31') %>% mutate(avg_temp =  (TMIN+TMAX)/2)
+
+```
+```{r}
+rats_clean <- rats_clean %>% rename(DATE = created_date)
+
+rats_clean$DATE <- as.Date(rats_clean$DATE, format = '%Y-%m-%d %H:%M:%S')
+
+rats_temp <- left_join(rats_clean, temp1020, by='DATE') %>% select('DATE', 'City', 'Park Borough', 'sighting_year', 'sighting_month', 'sighting_day', 'sighting_weekday', 'season', 'PRCP', 'avg_temp')
+```
+
+
+Dear Mr. Mayor,
+
+As the rat problem continues to plague New York City, we are determined to find a better way to allocate city funds in order to fix it. Our proposal is that the quarterly budgets be tinkered with to have different amounts going towards the rat problem in each quarter. Through our analysis, we have found that the difference in rat sightings between quarters is significant, and thus, the budgets should reflect this. 
+We first can look at rat sightings per month. The graph shows a pattern in which the middle months have higher amounts of rat sightings than the other months. 
+
+```{r}
+by_month <- rats_temp %>%
+  group_by(sighting_month) %>%
+  summarize(total_sightings = n(), average_temp = mean(avg_temp)) %>%
+  arrange(desc(total_sightings))
+
+ggplot(by_month, aes( x = sighting_month, y = total_sightings)) + 
+  geom_line(linewidth = .9, color = "#CC79A7") + 
+  scale_x_discrete(limits = 1:12, labels = month.abb)+
+  geom_point(color = "#CC79A7", size = 2) + 
+  labs(x = "Month", y = "Rat Sightings", title = "Rat Sightings by Month") + 
+  theme_minimal() 
+```
+
+Looking at a graph of the average temperatures in New York City, we can see that a similar pattern emerges. The middle months, or summer months are hotter on average than the winter months. 
+
+```{r}
+temp1020 %>% ggplot(aes(x=DATE, y=avg_temp, color= PRCP)) + geom_point() + labs(x='Year', y='Average Temperature (F)', title = 'Average Temperature in NYC 2010-2020') + theme_bw() + theme(legend.position='bottom')
+```
+
+Combining the two graphs, we see that the pattern is the same and that as the weather gets warmer, there are more rat sightings. This could be because there are more rats out in the warmer weather, or it could mean that there are less people out in the colder weather to be spotting the rats. 
+
+```{r}
+p1 <- ggplot(by_month, aes( x = sighting_month, y = average_temp)) + 
+  geom_line(linewidth = .9, color = "#0072B2") + 
+  scale_x_discrete(limits = 1:12, labels = month.abb)+
+  geom_point(color = "#0072B2", size = 2) + 
+  labs(x = "Month", y = "Average Temperature (F)", title = "Average Temperature by Month") + 
+  theme_minimal()
+
+p2 <- ggplot(by_month, aes( x = sighting_month, y = total_sightings)) + 
+  geom_line(linewidth = .9, color = "#CC79A7") + 
+  scale_x_discrete(limits = 1:12, labels = month.abb)+
+  geom_point(color = "#CC79A7", size = 2) + 
+  labs(x = "Month", y = "Rat Sightings", title = "Total Rat Sightings by Month") + 
+  theme_minimal() 
+
+p1+p2
+```
+
+To better understand the data, we can group the months into seasons and count the average rat sightings. As shown in the table below, the summer season has the most rat sightings on average, with winter predictably having the least. 
+
+```{r}
+
+my_colors = c("#D55E00", "#CC79A7", "#F0E442", "#56B4E9" )
+ggplot(rats_clean, aes(x = season, fill = season)) +
+  geom_bar() +
+  geom_text(stat = "count", aes(label = after_stat(count)), vjust = -0.5) +
+  scale_fill_manual(values = my_colors) +
+  labs(
+    title = "Rat Sightings Per Season",
+    x = "Quarters",
+    y = "Number of Rat Sightings"
+  ) +
+  theme_minimal()
+```
+
+For the purposes of the city budget, the quarters and the seasons do not line up exactly, so we can organize the data by quarter, which shows that quarter 2 and quarter 3 have the most rat sightings, which lines up with spring and winter. 
+
+```{r}
+my_colors = c("#0072B2", "#009E73", "#F0E442", "#E69F00" )
+ggplot(rats_clean, aes(x = quarters, fill = quarters)) +
+  geom_bar() +
+  geom_text(stat = "count", aes(label = after_stat(count)), vjust = -0.5) +
+  scale_fill_manual(values = my_colors) +
+  labs(
+    title = "Rat Sightings Per Quarter",
+    x = "Quarters",
+    y = "Number of Rat Sightings"
+  ) +
+  theme_minimal()
+```
+
+Overall, we can see that Q2 and Q3 have the most rat sightings, so it would make sense to allocate more funds towards extermination with those budgets and decrease the funding in Q1 and Q4 because there are not as many rat sightings. While the exact amounts will be up to you, Mr. Mayor, we think it would benefit our city to address the rat problem in a more strategic way and follow this plan.
+
+
+Thank you,
+
+Sophie Scherkenbach, Christy Staniak, and Nathania Casas Ponce.
+
+
+
+

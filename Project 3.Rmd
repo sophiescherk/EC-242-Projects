@@ -1,0 +1,279 @@
+---
+title: "Project 3"
+author: "Christina Staniak, Nathania Casas Ponce, and Sophie Scherkenbach"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document: default
+---
+```{r setup, include=TRUE, echo = FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                     collapse = TRUE,
+                     warning = FALSE, message = FALSE, error = FALSE,
+                     fig.align = 'center')
+```
+
+## Part 1
+
+```{r, echo = TRUE}
+library(tidyverse)
+
+recs = read.csv("recs2020_public_v7.csv")
+
+recs_clean <- recs %>%
+  select(
+    -starts_with("Z"),        
+    -starts_with("NWEIGHT"),
+    -starts_with("KWH"),
+    -starts_with("BTU"),
+    -starts_with("DOL"),
+    -starts_with("CUFEET"),
+    -starts_with("GALLON"),
+    -TOTALBTUSPH,
+    -TOTALDOLSPH,
+    -TOTALBTUWTH,
+    -TOTALDOLWTH,
+    -TOTALBTUOTH,
+    -TOTALDOLOTH,
+    -TOTALDOL,
+    -DOEID
+  )
+```
+
+```{r, echo = TRUE}
+factor_vars <- recs_clean %>%
+  select(where(is.numeric)) %>% # filters down to only the numeric variables
+  select(where(~ n_distinct(.) < 10)) %>% # for each column, check if the numbers are all less than 10. This filters for categorical variables, which probably have less than 10 options
+  select(where(~ all(. %% 1 == 0, na.rm = TRUE))) %>%  # for each columnm, which ones have integers only; categorical variables will most likely all be integers. 
+  names()
+
+
+factor_vars <- setdiff(factor_vars, c( # we are taking all the values from factor_vars and removing the following
+  "HDD65", "CDD65", # given heating and cooling temps
+  grep("^NUM", factor_vars, value = TRUE), # anything that starts with NUM, (found grep online)
+  "BEDROOMS", "NCOMBATH", "NHAFBATH", "OTHROOMS", "STORIES"  # other variables that we know are numerical
+))
+
+recs_clean <- recs_clean %>%
+  mutate(across(all_of(factor_vars), as.factor))
+```
+
+
+```{r, echo = TRUE}
+set.seed(2422025)
+
+eval_idx <- sample(nrow(recs_clean), 1000)
+recs_eval <- recs_clean[eval_idx, ]
+
+recs_remaining <- recs_clean[-eval_idx, ]
+
+n_train <- nrow(recs_remaining) / 2
+
+train_idx <- sample(nrow(recs_remaining), n_train)
+recs_train <- recs_remaining[train_idx, ]
+recs_test  <- recs_remaining[-train_idx, ]
+
+nrow(recs_eval)    
+nrow(recs_train)   
+nrow(recs_test) 
+```
+
+## Part 2
+
+We think that total household energy consumption will be influenced heavily by house size, number of people in the house, and appliance types. 
+
+In terms of house size, it would make sense that a larger house would correlate with higher energy consumption simply because there are more lights; every room in the house should have at least one light, and the more rooms there are in a house, the higher the square footage. So, we would expect a strong, positive correlation between total rooms in a house (TOTROOMS) and total household energy consumption (TOTBTU). 
+
+For the number of people in a household, we would also expect an increase in energy usage because more people means that the appliances are being used more, and more lights will be on if everyone is in different rooms of the house. Therefore, we would expect a strong, positive correlation between the number of people in a household (NHSLDMEM) and total household energy consumption (TOTBTU).
+
+Lastly, in terms of appliance types, we would expect that a house that, for example, has an air conditioning unit would use up more energy than a house without. So, we would expect to see a higher level of total household energy consumption (TOTBTU) for houses where there is an air conditioning unit (AIRCOND = TRUE). 
+
+As shown by the plot below, there is a positive correlation between total number of rooms and the total household energy consumption. 
+
+```{r}
+
+ggplot(recs_clean, aes(x = TOTROOMS, y = TOTALBTU)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = "loess") +
+  labs(
+    title = "Total Energy Consumption vs Home Size (Rooms)",
+    x = "Total Rooms",
+    y = "Total BTU Consumption"
+  )
+
+```
+
+## Part 3
+
+```{r}
+library(caret)
+
+rmse = function(actual, predicted) {
+  sqrt(mean((actual - predicted) ^ 2))
+}
+
+get_complexity = function(model) {
+  length(coef(model)) - 1
+}
+
+fit_knn <- function(x) {
+  knnreg(TOTALBTU ~ WINDOWS + TREESHAD + INTERNET + HEATHOME + AIRCOND + TYPETHERM + SOLAR + NOHEATDAYS + SQFTRANGE*TOTSQFT_EN + OVENUSE + MICRO + DISHWASH + DWASHUSE + NUMCFAN + USECFAN + TOTROOMS + NHSLDMEM, data = recs_clean, k = x)
+}
+
+k_complex <- seq(2, 50, by = 2)
+
+knn_est <- lapply(k_complex, fit_knn)
+
+pred_train <- lapply(knn_est, predict, newdata = recs_train)
+
+pred_test <- lapply(knn_est, predict, newdata = recs_test)
+
+train_rmse <- sapply(pred_train, rmse, actual = recs_train$TOTALBTU)
+
+test_rmse <- sapply(pred_test, rmse, actual = recs_test$TOTALBTU)
+```
+
+```{r}
+totuse <- data.frame(
+  k = k_complex,
+  train_rmse = train_rmse,
+  test_rmse = test_rmse
+)
+
+best_k <- min(totuse$k)
+best_rmse <- min(totuse$test_rmse)
+
+knitr::kable(totuse)
+```
+
+```{r}
+ggplot(totuse, aes(x = k)) + 
+  geom_point(aes(y= train_rmse, color = 'Training RMSE', )) + 
+  geom_point(aes(y = test_rmse, color = 'Test RMSE')) + 
+  theme_bw() + labs(x = 'K-nearest neighbors', y = 'RMSE') + 
+  geom_text(aes(x = best_k, y = best_rmse, label = ' Lowest Test rmse'),
+            hjust = 0.02) +  
+  theme(legend.title = element_blank(), legend.position = 'bottom')
+```
+
+## Part 4
+
+```{r}
+min <- which.min(totuse$test_rmse)
+
+best_model <- knn_est[min]
+
+pred_eval <- predict(best_model, newdata = recs_eval)
+
+eval_rmse <- sapply(pred_eval, rmse, actual = recs_eval$TOTALBTU)
+```
+
+The RMSE of the evaluation dataset is 30317.69.
+
+```{r, fig.width = 7, fig.height = 4.5}
+rooms_test <- recs_eval %>%
+  mutate(TOTROOMS = TOTROOMS * 1.6)
+
+pred_rooms <- predict(best_model, newdata = rooms_test)
+
+house_number <- seq(1, nrow(recs_eval))
+
+rooms <- tibble(house = house_number, original_prediction = unlist(pred_eval), rooms_prediction = unlist(pred_rooms))
+
+avg_pred_org <- mean(rooms$original_prediction)
+
+avg_pred_rooms <- mean(rooms$rooms_prediction)
+
+ggplot(rooms, aes(x = house)) + 
+  geom_point(aes(y = original_prediction, 
+                 color = 'Original Prediction')) + 
+  geom_point(aes(y = rooms_prediction, 
+                 color = 'Prediction with TOTROOM + 60%')) +
+  geom_hline(aes(yintercept = avg_pred_org, 
+                 color = 'Average Original Prediction')) +
+  geom_hline(aes(yintercept = avg_pred_rooms, 
+                 color = 'Average Prediction with TOTROOM + 60%')) +
+  theme_bw() + 
+  labs(x = 'Index', y = 'Prediction') + 
+  theme(legend.title = element_blank(), legend.position = 'top', legend.text = element_text(size = 6))
+```
+
+Here we see that raising the number of rooms in a house by 60% does raise the predicted energy usage. The average prediction before the transformation is 85681.35, and the average prediction after is 91467.15.
+
+```{r, fig.width = 7, fig.height = 4.5}
+occ_test <- recs_eval
+
+occ_test$NHSLDMEM[occ_test$NHSLDMEM != 4] <- 4
+
+iris$Species[iris$Species == 'virginica'] <- 'setosa'
+
+
+pred_occ <- predict(best_model, newdata = occ_test)
+
+occ <- tibble(house = house_number, original_prediction = unlist(pred_eval), occ_prediction = unlist(pred_occ))
+
+avg_pred_org <- mean(occ$original_prediction)
+
+avg_pred_occ <- mean(occ$occ_prediction)
+
+ggplot(occ, aes(x = house)) + 
+  geom_point(aes(y = original_prediction, 
+                 color = 'Original Prediction')) + 
+  geom_point(aes(y = occ_prediction, 
+                 color = 'Prediction with NHSLDMEM = 4')) +
+  geom_hline(aes(yintercept = avg_pred_org, 
+                 color = 'Average Original Prediction')) +
+  geom_hline(aes(yintercept = avg_pred_occ, 
+                 color = 'Average Prediction with NHSLDMEM = 4')) +
+  theme_bw() + 
+  labs(x = 'Index', y = 'Prediction') + 
+  theme(legend.title = element_blank(), legend.position = 'top', legend.text = element_text(size = 6))
+```
+
+Here we see that changing the occupancy to the highest factor (4) does slightly raise the predicted energy usage. The average prediction before the transformation is 85681.35, and the average prediction after is 86160.44.
+
+```{r, fig.width = 7, fig.height = 4.5}
+ac_test <- recs_eval
+
+ac_test$AIRCOND[ac_test$AIRCOND != 1] <- 1
+
+pred_ac <- predict(best_model, newdata = ac_test)
+
+ac <- tibble(house = house_number, original_prediction = unlist(pred_eval), ac_prediction = unlist(pred_ac))
+
+avg_pred_org <- mean(ac$original_prediction)
+
+avg_pred_ac <- mean(ac$ac_prediction)
+
+ggplot(ac, aes(x = house)) + 
+  geom_point(aes(y = original_prediction, 
+                 color = 'Original Prediction')) + 
+  geom_point(aes(y = ac_prediction, 
+                 color = 'Prediction with AIRCOND = 1')) +
+  geom_hline(aes(yintercept = avg_pred_org, 
+                 color = 'Average Original Prediction')) +
+  geom_hline(aes(yintercept = avg_pred_occ, 
+                 color = 'Average Prediction with AIRCOND = 1')) +
+  theme_bw() + 
+  labs(x = 'Index', y = 'Prediction') + 
+  theme(legend.title = element_blank(), legend.position = 'top', legend.text = element_text(size = 6))
+```
+
+Here we see that changing air conditioner to true (1) does not raise the predicted energy usage. It actually lowers the average slightly; the average prediction before the transformation is 85681.35, and the average prediction after is 85575.99.
+
+## Part 5
+
+We have been delving deeper into  dataset about selected economic criteria split by disability status.
+
+### H1: Persons with diabilities are less likely to commute via car than those without.
+
+Many disabilities prevent people from being able to drive. Additionally, the commute section of the dataset includes a work from home category. As many persons with disabilities have difficulties leaving their homes, it would seem that they may tend to work from home more often. People often assume that people with disabilities don't hold jobs or contribute to the economy, so digging into the way that they work is always enlightening. 
+
+### H2: Industries that are less physical labor intensive will employ a higher percentage of persons with disabilities.
+
+There are certainly disabilities that still allow the person to do large amounts of physical labor, but many do not. The most common way that people become disabled is simply by aging. Common conditions such as arthritis, chronic pain, and mobility impairments may keep a person from being able to perform high labor tasks. Seeing, statistically, what sectors persons with disabilities are commonly employed in would be an interesting way to look at how workplace accommodations relate to industry.
+
+
+### H3: The labor force participation rate of persons with disabilities has grown over the past 5 years and will continue to grow in coming years.
+
+Persons with disabilities have gained more access to the job market with the growing amount of hybrid and remote work opportunities. Furthermore, the number of persons with disabilities within the population has grown post-pandemic; this is most likely due to COVID-19's relation to disabilities such as POTS. These factors combined with the advancement of science and technology may have lead to a higher ability for persons with disabilities to participate in the labor force. This is aninteresting trend, as it mirrors society's growth in inclusion over time. It also is fascinating to see how persons with disabilities affect the economy.
